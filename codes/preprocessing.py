@@ -5,6 +5,8 @@ from typing import List, Optional
 from tqdm import tqdm
 import numpy as np
 import pandas as pd
+from torch.utils.data import Dataset
+from torch.utils.data import DataLoader
 
 
 class SplittingImage:
@@ -134,33 +136,119 @@ class SplittingImage:
                     self._save_tile_(src_image, window, images_folder, idx, image_id)
 
 
-class GetData:
+def image_padding(image, target_size=640):
     """
-    Class gets data that will be preprocessed
+    Pad an image to a target size using reflection padding.
+    """
+    height, width = image.shape[1:3]
+    pad_height = max(0, target_size - height)
+    pad_width = max(0, target_size - width)
+    padded_image = np.pad(
+        image, ((0, 0), (0, pad_height), (0, pad_width)), mode="reflect"
+    )
+    height, width = padded_image.shape[1:3]
+    return padded_image
+
+
+def mask_padding(mask, target_size=640):
+    """
+    Pad a mask to a target size using reflection padding.
+    """
+    height, width = mask.shape
+    pad_height = max(0, target_size - height)
+    pad_width = max(0, target_size - width)
+    padded_mask = np.pad(mask, ((0, pad_height), (0, pad_width)), mode="reflect")
+    return padded_mask
+
+
+def get_data_list(img_path: str) -> np.array:
+    """Retrieves a list of file names from the given directory.
+
+    Args:
+        img_path (str): Folder path
+
+    Returns:
+        np.array: file names from folder
+    """
+    name = []
+    for _, _, filenames in os.walk(
+        img_path
+    ):  # given a directory iterates over the files
+        for filename in filenames:
+            f = filename.split(".")[0]
+            name.append(f)
+
+    df = (
+        pd.DataFrame({"id": name}, index=np.arange(0, len(name)))
+        .sort_values("id")
+        .reset_index(drop=True)
+    )
+    df = df["id"].values
+
+    return np.delete(df, 0)
+
+
+class WaterDataset(Dataset):
+    """
+    A custom dataset class for loading and preprocessing paired image and mask files for water segmentation.
+
+    Attributes:
+    ----------
+    img_path : str
+        Directory path to the input image files.
+    mask_path : str
+        Directory path to the mask files corresponding to each image.
+    file_names : list of str
+        List of file names (without extensions) for the image and mask files to be loaded.
+
+    Methods:
+    -------
+    __len__()
+        Returns the total number of image-mask pairs in the dataset.
+
+    __getitem__(idx)
+        Retrieves the image and mask at the specified index `idx`, applies padding, and returns them.
+
+    Examples:
+    --------
+    >>> ds = WaterDataset(img_path='data/images/', mask_path='data/masks/', file_names=data_list)
+    >>> dl = DataLoader(ds)
+
+    The DataLoader `dl` can then be used to retrieve batches of paired images and masks.
+
     """
 
-    def get_data_list(self, img_path: str) -> np.array:
-        """Retrieves a list of file names from the given directory.
+    def __init__(self, img_path, mask_path, file_names):
+        self.img_path = img_path
+        self.mask_path = mask_path
+        self.file_names = file_names
 
-        Args:
-            img_path (str): Folder path
+    def __len__(self):
+        return len(self.file_names)
 
-        Returns:
-            np.array: file names from folder
-        """
-        name = []
-        for _, _, filenames in os.walk(
-            img_path
-        ):  # given a directory iterates over the files
-            for filename in filenames:
-                f = filename.split(".")[0]
-                name.append(f)
+    def __getitem__(self, idx):
+        with rasterio.open(self.img_path + self.file_names[idx] + ".tif") as fin:
+            image = fin.read()
+        image = image_padding(image).astype(np.float32)
 
-        df = (
-            pd.DataFrame({"id": name}, index=np.arange(0, len(name)))
-            .sort_values("id")
-            .reset_index(drop=True)
-        )
-        df = df["id"].values
+        with rasterio.open(self.mask_path + self.file_names[idx] + ".tif") as fin:
+            mask = fin.read(1)
+        mask = mask_padding(mask)
 
-        return np.delete(df, 0)
+        return image, mask
+
+
+def get_data_loader_for_train(img_path: str, mask_path: str) -> DataLoader:
+    """Function for train dataset preparation
+
+    Args:
+        img_path (str): Folder with big-sized images
+        mask_path (str): Folder with masks for big-sized images
+
+    Returns:
+        DataLoader: DataLoader with paired image and mask files
+    """
+    data_list = get_data_list(img_path)
+    ds = WaterDataset(img_path=img_path, mask_path=mask_path, file_names=data_list)
+    dl = DataLoader(ds)
+    return dl

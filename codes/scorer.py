@@ -14,7 +14,7 @@ from sklearn.metrics import f1_score
 def get_args():
     parser = argparse.ArgumentParser()
     arg = parser.add_argument
-    arg("--osm_path", type=str, help="Path to OSM file", required=True) 
+    arg("--osm_path", type=str, help="Path to OSM file", required=True)
     arg("--masks_path", type=str, help="Path to masks", required=True)
     arg("--preds_path", type=str, help="Path to preds", required=True)
     arg("--pre_gt_path", type=str, help="Path to pre gt", required=True)
@@ -25,11 +25,11 @@ def get_args():
 
 
 def flooded_houses(
-    osm_path: str, 
-    lats: np.ndarray, 
-    lons: np.ndarray, 
-    pred: np.ndarray, 
-    ground_truth: np.ndarray 
+    osm_path: str,
+    lats: np.ndarray,
+    lons: np.ndarray,
+    pred: np.ndarray,
+    ground_truth: np.ndarray,
 ):
     gdf = gpd.read_file(osm_path)
     gdf = gdf.to_crs(4326)
@@ -39,18 +39,20 @@ def flooded_houses(
     flooded_gt = []
     pred = pred.flatten()  # Flatten the prediction array
     ground_truth = ground_truth.flatten()  # Flatten the ground_truth array
-    
+
     for _, row in gdf.iterrows():
         polygon = row.geometry
         # Scale the polygon for more accurate coverage
         scaled_polygon = affinity.scale(polygon, xfact=1.5, yfact=1.5)
-        
+
         # Get the polygon's bounding box (xmin, ymin, xmax, ymax)
         xmin, ymin, xmax, ymax = scaled_polygon.bounds
 
         # Find the indices of points that fall inside the bounding box of the polygon
-        selected_indices = np.where((ymin <= lats) & (lats <= ymax) & (xmin <= lons) & (lons <= xmax))
-        
+        selected_indices = np.where(
+            (ymin <= lats) & (lats <= ymax) & (xmin <= lons) & (lons <= xmax)
+        )
+
         lats_to_check = lats[selected_indices]
         lons_to_check = lons[selected_indices]
         flood_pred_to_check = pred[selected_indices]
@@ -58,20 +60,22 @@ def flooded_houses(
 
         # Check if at least one point inside the polygon is flooded in the prediction mask
         is_flooded_pred = any(
-            flood_pred_to_check[i] and scaled_polygon.contains(Point(lons_to_check[i], lats_to_check[i]))
+            flood_pred_to_check[i]
+            and scaled_polygon.contains(Point(lons_to_check[i], lats_to_check[i]))
             for i in range(len(flood_pred_to_check))
         )
 
         # Check if at least one point inside the polygon is flooded in the ground truth mask
         is_flooded_gt = any(
-            flood_gt_to_check[i] and scaled_polygon.contains(Point(lons_to_check[i], lats_to_check[i]))
+            flood_gt_to_check[i]
+            and scaled_polygon.contains(Point(lons_to_check[i], lats_to_check[i]))
             for i in range(len(flood_gt_to_check))
         )
 
         flooded_pred.append(1 if is_flooded_pred else 0)
         flooded_gt.append(1 if is_flooded_gt else 0)
 
-    return f1_score(flooded_gt, flooded_pred, average='macro')
+    return f1_score(flooded_gt, flooded_pred, average="macro")
 
 
 def load_raster(file_path):
@@ -84,25 +88,24 @@ def load_raster(file_path):
 def calculate_f1_score(dir1, dir2):
     """Calculate the F1 score between corresponding images in two directories."""
     f1_scores = []
-    
+
     # List all files in the directories
     files1 = sorted(os.listdir(dir1))
     files2 = sorted(os.listdir(dir2))
-    
-    
+
     for file1, file2 in zip(files1, files2):
 
         file_path1 = os.path.join(dir1, file1)
         file_path2 = os.path.join(dir2, file2)
-        
+
         # Load the images
         img1 = load_raster(file_path1)
         img2 = load_raster(file_path2)
-        
+
         # Calculate F1 score
-        f1 = f1_score(img1, img2, average='macro')
+        f1 = f1_score(img1, img2, average="macro")
         f1_scores.append(f1)
-    
+
     # Calculate average F1 score across all image pairs
     average_f1 = np.mean(f1_scores)
     return average_f1
@@ -129,7 +132,9 @@ def main():
         pre_mask = multi_band_src.read(1)
         pre_height, pre_width = pre_mask.shape
         pre_cols, pre_rows = np.meshgrid(np.arange(pre_width), np.arange(pre_height))
-        pre_x, pre_y = rasterio.transform.xy(multi_band_src.transform, pre_rows, pre_cols) 
+        pre_x, pre_y = rasterio.transform.xy(
+            multi_band_src.transform, pre_rows, pre_cols
+        )
         pre_lons, pre_lats = np.array(pre_x), np.array(pre_y)
 
     with rasterio.open(pre_pred_path) as multi_band_src:
@@ -138,8 +143,12 @@ def main():
     with rasterio.open(post_gt_path) as multi_band_src:
         post_mask = multi_band_src.read(1)
         post_height, post_width = post_mask.shape
-        post_cols, post_rows = np.meshgrid(np.arange(post_width), np.arange(post_height))
-        post_x, post_y = rasterio.transform.xy(multi_band_src.transform, post_rows, post_cols) 
+        post_cols, post_rows = np.meshgrid(
+            np.arange(post_width), np.arange(post_height)
+        )
+        post_x, post_y = rasterio.transform.xy(
+            multi_band_src.transform, post_rows, post_cols
+        )
         post_lons, post_lats = np.array(post_x), np.array(post_y)
 
     with rasterio.open(post_pred_path) as multi_band_src:
@@ -150,6 +159,7 @@ def main():
     avg_f1_business = (pre_f1 + post_f1) / 2
 
     print(f"F1-Score: {(f1_water + avg_f1_business) / 2 :.3f}")
+
 
 if __name__ == "__main__":
     main()
