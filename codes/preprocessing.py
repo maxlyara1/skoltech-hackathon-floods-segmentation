@@ -3,15 +3,13 @@ import os
 from rasterio.windows import Window
 from typing import List, Optional
 from tqdm import tqdm
-
-
-def get_images_from_folder(a):
-    pass
+import numpy as np
+import pandas as pd
 
 
 class SplittingImage:
     """
-    Class that allows user to im
+    Class that allows user to preprocess files of size different from 640x640
     """
 
     def _get_tiles_with_overlap_(
@@ -84,8 +82,8 @@ class SplittingImage:
         image_path: str,
         output_folder: str,
         mask_path: Optional[str] = None,
-        tile_size: int = 512,
-        overlap: int = 128,
+        tile_size: int = 640,
+        overlap: int = 0,
         image_id: int = 0,
     ) -> None:
         """
@@ -134,3 +132,35 @@ class SplittingImage:
             else:
                 for idx, window in tqdm(enumerate(tiles)):
                     self._save_tile_(src_image, window, images_folder, idx, image_id)
+
+
+class GetData:
+    """
+    Class gets data that will be preprocessed
+    """
+
+    def get_data_list(self, img_path: str) -> np.array:
+        """Retrieves a list of file names from the given directory.
+
+        Args:
+            img_path (str): Folder path
+
+        Returns:
+            np.array: file names from folder
+        """
+        name = []
+        for _, _, filenames in os.walk(
+            img_path
+        ):  # given a directory iterates over the files
+            for filename in filenames:
+                f = filename.split(".")[0]
+                name.append(f)
+
+        df = (
+            pd.DataFrame({"id": name}, index=np.arange(0, len(name)))
+            .sort_values("id")
+            .reset_index(drop=True)
+        )
+        df = df["id"].values
+
+        return np.delete(df, 0)
