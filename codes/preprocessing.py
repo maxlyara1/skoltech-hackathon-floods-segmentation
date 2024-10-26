@@ -238,12 +238,12 @@ class WaterDataset(Dataset):
         return image, mask
 
 
-def get_data_loader_for_train(img_path: str, mask_path: str) -> DataLoader:
-    """Function for train dataset preparation
+def get_data_loader(img_path: str, mask_path: str) -> DataLoader:
+    """Function for DataLoader preparation
 
     Args:
-        img_path (str): Folder with big-sized images
-        mask_path (str): Folder with masks for big-sized images
+        img_path (str): Folder with fixed size images
+        mask_path (str): Folder with masks for fixed size images
 
     Returns:
         DataLoader: DataLoader with paired image and mask files
