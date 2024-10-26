@@ -23,7 +23,7 @@
 
 <div align="center">
   <h3>Пайплайн модели</h3>
-  <img width="735" alt="image" src="https://github.com/maxlyara1/skoltech-hackathon-floods-segmentation/blob/af5a472f1b36ac8a642bfa6a06b822fde26de204/pipeline.png">
+  <img width="1005" alt="image" src="https://github.com/maxlyara1/skoltech-hackathon-floods-segmentation/blob/af5a472f1b36ac8a642bfa6a06b822fde26de204/pipeline.png">
 </div>
 
 ---
