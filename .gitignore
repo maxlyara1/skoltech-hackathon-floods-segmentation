@@ -2,3 +2,8 @@
 .DS_Store
 /train
 pipeline.drawio
+/venv
+/data
+/images
+/masks
+/test
