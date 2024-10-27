@@ -8,6 +8,8 @@ from tqdm import tqdm
 import random
 from torch.utils.data import ConcatDataset
 from formatting import preprocess_NDWI_format, preprocess_NDBI_format
+import json
+from get_buildings_mask import apply_building_mask
 
 
 class SplittingImage:
@@ -94,6 +96,7 @@ class SplittingImage:
         image_path: str,
         output_folder: str,
         mask_path: Optional[str] = None,
+        buildings_mask_path: Optional[str] = None,
         tile_size: int = 640,
         overlap: int = 0,
         image_id: int = 0,
@@ -104,6 +107,7 @@ class SplittingImage:
         Args:
             image_path (str): Path to the input image file.
             mask_path (Optional[str]): Path to the mask file, if available.
+            buildings_mask_path (Optional[str]): Path to the buildings mask file, if available.
             output_folder (str): Directory to save the tiles.
             tile_size (int, optional): Size of each tile, default is 640x640 pixels.
             overlap (int, optional): Overlap between tiles, default is 0.
@@ -122,7 +126,9 @@ class SplittingImage:
             if mask_path:
                 masks_folder = os.path.join(output_folder, "masks")
                 os.makedirs(masks_folder, exist_ok=True)
-
+            if buildings_mask_path:
+                building_masks_folder = os.path.join(output_folder, "building_masks")
+                os.makedirs(building_masks_folder, exist_ok=True)
             tiles = self._get_tiles_with_overlap_(
                 image_width, image_height, tile_size, overlap
             )
@@ -137,6 +143,15 @@ class SplittingImage:
             else:
                 for idx, window in tqdm(enumerate(tiles)):
                     self._save_tile_(src_image, window, images_folder, idx, image_id)
+            if buildings_mask_path:
+                with rasterio.open(buildings_mask_path) as src_mask:
+                    for idx, window in tqdm(enumerate(tiles)):
+                        self._save_tile_(
+                            src_image, window, images_folder, idx, image_id
+                        )
+                        self._save_tile_(
+                            src_mask, window, building_masks_folder, idx, image_id
+                        )
 
 
 def _image_padding_(image, target_size=640):
@@ -381,6 +396,7 @@ def preprocess_data(
     big_masks_path: Optional[str] = None,
     train: bool = True,
     image_for_model_size: int = 640,
+    geojson_path: str = "train/osm/9.geojson",
 ) -> DataLoader:
     """Function that preprocess data from 10240x5000 size to many 640x640.
     Augmentation and overlapping works only in train to make dataset bigger.
@@ -390,6 +406,7 @@ def preprocess_data(
         big_masks_path (Optional[str], optional): Path to big-sized images. Defaults to None.
         train (bool, optional): If true then augmentation and overlapping works. Defaults to True.
         image_for_model_size (int, optional): Size of image for CV model. Defaults to 640.
+        geojson_path (str, optional): Path to geojson object from train. Defaults to "train/osm/9.geojson".
 
     Returns:
         DataLoader: Dataloader with image, mask, metainformation(geo)
@@ -403,6 +420,12 @@ def preprocess_data(
             continue  # Skip files that are not .tif
         full_path = os.path.join(big_images_path, path_to_file)
         if os.path.isfile(full_path):
+
+            # Загружаем GeoJSON вручную как JSON для обработки геометрии
+            with open(geojson_path, "r", encoding="utf-8") as f:
+                geojson_data = json.load(f)
+            building_mask_folder = apply_building_mask(full_path, geojson_data)
+
             class_to_split.image_split(
                 image_path=full_path,
                 output_folder="data",
@@ -411,6 +434,7 @@ def preprocess_data(
                     if big_masks_path
                     else None
                 ),
+                buildings_mask_path=(building_mask_folder if big_masks_path else None),
                 tile_size=image_for_model_size,
                 overlap=overlap,
                 image_id=path_to_file.split(".")[0],
@@ -427,7 +451,7 @@ def preprocess_data(
     # NDBI DataLoader
     ndbi_loader = get_data_loader(
         img_path="data/images/",
-        mask_path="data/masks/" if train else None,
+        mask_path="data/building_masks/" if train else None,
         preprocess_fn=preprocess_NDBI_format,
         train=train,
     )
@@ -435,18 +459,18 @@ def preprocess_data(
 
 
 def main():
-    # train_ndwi_dataloader, train_ndbi_dataloader = preprocess_data(
-    #     big_images_path="train/images",
-    #     big_masks_path="train/masks",
-    #     train=True,
-    #     image_for_model_size=640,
-    # )
-    test_ndwi_dataloader, test_ndbi_dataloader = preprocess_data(
+    train_ndwi_dataloader, train_ndbi_dataloader = preprocess_data(
         big_images_path="train/images",
-        big_masks_path=None,
-        train=False,
+        big_masks_path="train/masks",
+        train=True,
         image_for_model_size=640,
     )
+    # test_ndwi_dataloader, test_ndbi_dataloader = preprocess_data(
+    #     big_images_path="train/images",
+    #     big_masks_path=None,
+    #     train=False,
+    #     image_for_model_size=640,
+    # )
 
 
 if __name__ == "__main__":
