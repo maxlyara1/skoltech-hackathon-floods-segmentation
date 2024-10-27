@@ -1,193 +1,107 @@
-from preprocessing import preprocess_data
+import os
+import cv2
 import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader, Dataset
-import segmentation_models_pytorch as smp
-from tqdm import tqdm
-import numpy as np
-
-
-class CustomDataset(Dataset):
-    """
-    Custom Dataset class to handle the data properly
-    """
-
-    def __init__(self, dataloader):
-        """
-        Args:
-            dataloader: Original dataloader containing (image, mask, meta)
-        """
-        self.data = []
-        # Convert iterator to list first
-        data_list = list(dataloader)
-
-        for item in data_list:
-            if len(item) == 3:  # Ensure we have image, mask, and meta
-                image, mask, meta = item
-                # Make contiguous copies of arrays
-                if isinstance(image, np.ndarray):
-                    image = np.ascontiguousarray(image.copy())
-                if isinstance(mask, np.ndarray):
-                    mask = np.ascontiguousarray(mask.copy())
-                self.data.append((image, mask, meta))
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, idx):
-        image, mask, meta = self.data[idx]
-
-        try:
-            # Convert to torch tensors with explicit copying
-            if isinstance(image, np.ndarray):
-                image = torch.from_numpy(np.ascontiguousarray(image)).float()
-            elif isinstance(image, torch.Tensor):
-                image = image.clone().float()
-
-            if isinstance(mask, np.ndarray):
-                mask = torch.from_numpy(np.ascontiguousarray(mask)).float()
-            elif isinstance(mask, torch.Tensor):
-                mask = mask.clone().float()
-
-            # Ensure correct dimensions
-            if len(image.shape) == 2:
-                image = image.unsqueeze(0)
-            if len(mask.shape) == 2:
-                mask = mask.unsqueeze(0)
-
-            return image, mask, meta
-
-        except Exception as e:
-            print(f"Error processing item {idx}: {str(e)}")
-            print(
-                f"Image shape: {image.shape if hasattr(image, 'shape') else 'No shape'}"
-            )
-            print(f"Mask shape: {mask.shape if hasattr(mask, 'shape') else 'No shape'}")
-            raise e
+from ultralytics import YOLO
+from ultralytics.data.converter import convert_segment_masks_to_yolo_seg
+from preprocessing import preprocess_data
 
 
 class Models:
     def __init__(self):
-        """
-        Initialize the Models class with data loaders and model parameters
-        """
-        # Initialize original dataloaders
-        original_train_ndwi, original_train_ndbi = preprocess_data(
+        # Инициализация загрузчика данных NDWI для тренировки
+        self.train_ndwi_dataloader, _ = preprocess_data(
             big_images_path="train/images",
             big_masks_path="train/masks",
             train=True,
             image_for_model_size=640,
         )
+        # Сохранение данных из загрузчика на диск
+        self.save_dataloader_to_disk()
 
-        # Create custom dataset
-        custom_dataset = CustomDataset(original_train_ndwi)
+    def save_dataloader_to_disk(self):
+        """Сохранение изображений и масок из dataloader на диск."""
+        os.makedirs("train/saved_images", exist_ok=True)
+        os.makedirs("train/saved_masks", exist_ok=True)
 
-        # Create new dataloader with custom dataset
-        self.train_ndwi_dataloader = DataLoader(
-            custom_dataset, batch_size=8, shuffle=True, num_workers=0, pin_memory=True
+        for i, (images, masks) in enumerate(self.train_ndwi_dataloader):
+            try:
+                # Копирование массива для предотвращения ошибки с отрицательными strides
+                image_np = images[0].numpy().copy().astype("uint8")
+                mask_np = masks[0].numpy().copy().astype("uint8")
+
+                # Сохранение изображений
+                image_path = f"train/saved_images/image_{i}.tif"
+                cv2.imwrite(image_path, image_np)
+
+                # Сохранение масок
+                mask_path = f"train/saved_masks/mask_{i}.tif"
+                cv2.imwrite(mask_path, mask_np)
+            except Exception as e:
+                print(f"Ошибка при сохранении данных из dataloader: {e}")
+
+    def check_images(self, path):
+        """Проверка наличия и целостности изображений в заданной папке."""
+        valid_images = []
+        for filename in os.listdir(path):
+            if filename.endswith(".tif"):
+                img_path = os.path.join(path, filename)
+                if cv2.imread(img_path) is not None:
+                    valid_images.append(img_path)
+                else:
+                    print(f"WARNING: Ignoring corrupt image file: {img_path}")
+        return valid_images
+
+    def segment_water(self, epochs=3, device="cpu"):
+        # Конвертация масок в формат YOLO Seg
+        convert_segment_masks_to_yolo_seg(
+            masks_dir="train/saved_masks",  # Путь к папке с масками
+            output_dir="train/yolo_data",  # Папка для сохранения YOLO-формата
+            classes=2,  # Количество классов
         )
 
-    def _initialize_water_model(self):
-        """
-        Initialize U-Net model for water segmentation
-        """
-        model = smp.Unet(
-            encoder_name="resnet34",
-            encoder_weights="imagenet",
-            in_channels=3,
-            classes=1,
-        )
-        return model.to(self.device)
-
-    def segment_water(self, training_epochs=50):
-        """
-        Train model for water segmentation
-        """
-        self.water_model.train()
-        optimizer = optim.Adam(self.water_model.parameters(), lr=0.001)
-        criterion = nn.BCEWithLogitsLoss()
-
-        for epoch in range(training_epochs):
-            epoch_loss = 0
-            progress_bar = tqdm(
-                self.train_ndwi_dataloader, desc=f"Epoch {epoch+1}/{training_epochs}"
-            )
-
-            for batch_idx, (images, masks, _) in enumerate(progress_bar):
-                # Ensure correct shape and type
-                images = images.float().to(self.device)
-                masks = masks.float().to(self.device)
-
-                optimizer.zero_grad()
-                outputs = self.water_model(images)
-
-                # Ensure matching dimensions
-                if outputs.shape != masks.shape:
-                    masks = masks.unsqueeze(1)  # Add channel dimension if needed
-
-                loss = criterion(outputs, masks)
-                loss.backward()
-                optimizer.step()
-
-                epoch_loss += loss.item()
-                progress_bar.set_postfix({"loss": epoch_loss / (batch_idx + 1)})
-
+        # Проверка наличия валидных изображений
+        valid_images = self.check_images("train/saved_images")
+        if not valid_images or not os.listdir("train/saved_masks"):
             print(
-                f"Epoch {epoch+1}, Loss: {epoch_loss/len(self.train_ndwi_dataloader):.4f}"
+                "Папка с изображениями или масками пуста или содержит поврежденные файлы!"
             )
+            return
 
-        return self.water_model
-
-    def predict_water(self, image):
+        # Создание конфигурации yaml для использования в модели YOLO
+        yaml_content = f"""
+        train: {os.path.abspath('train/saved_images')}  # путь к обучающим изображениям
+        val: {os.path.abspath('train/saved_images')}  # путь к проверочным изображениям
+        nc: 2  # число классов
+        names: ['Flood', 'Nothing']  # названия классов
         """
-        Predict water segmentation for a single image
 
-        Args:
-            image (torch.Tensor): Input image tensor
+        # Запись в файл
+        os.makedirs("train/yolo_data", exist_ok=True)
+        with open("train/yolo_data/annotations.yaml", "w") as f:
+            f.write(yaml_content)
 
-        Returns:
-            numpy.ndarray: Binary mask of water segmentation
-        """
-        self.water_model.eval()
-        with torch.no_grad():
-            image = image.unsqueeze(0).to(self.device)  # Add batch dimension
-            output = self.water_model(image)
-            pred = torch.sigmoid(output) > 0.5
-            return pred.cpu().numpy().squeeze()
+        # Загрузка и тренировка модели YOLO
+        model = YOLO("yolo11n-seg.pt")
+        model.train(
+            data="train/yolo_data/annotations.yaml",
+            epochs=epochs,
+            device=device,
+        )
 
+        # Получение прогнозов на изображениях
+        self.predict_flood(model)
 
-# Example usage script
-def main():
-    # 1. Initialize the Models class
-    model_handler = Models()
-
-    # 2. Train the water segmentation model
-    trained_model = model_handler.segment_water(training_epochs=50)
-
-    # 3. Save the trained model (optional but recommended)
-    torch.save(trained_model.state_dict(), "water_segmentation_model.pth")
-
-    # 4. Example of making predictions (if you have a test image)
-    # Assuming you have a test image prepared as a tensor
-    test_image = next(iter(model_handler.train_ndwi_dataloader))[0][
-        0
-    ]  # Get first image from dataloader
-    prediction = model_handler.predict_water(test_image)
-
-    # 5. Visualize results (optional)
-    import matplotlib.pyplot as plt
-
-    plt.figure(figsize=(10, 5))
-    plt.subplot(1, 2, 1)
-    plt.imshow(test_image.permute(1, 2, 0))  # Convert from CHW to HWC for display
-    plt.title("Original Image")
-
-    plt.subplot(1, 2, 2)
-    plt.imshow(prediction, cmap="gray")
-    plt.title("Water Segmentation")
-    plt.show()
+    def predict_flood(self, model):
+        # Пример прогноза на изображении из тестового набора
+        predictions = model.predict(
+            "data/images/tile_2_0.tif", save=True
+        )  # Укажите путь к тестовому изображению
+        for pred in predictions:
+            print(pred)  # Отображение каждого прогноза
 
 
 if __name__ == "__main__":
-    main()
+    models = Models()
+    models.segment_water(
+        epochs=3, device="cuda" if torch.cuda.is_available() else "cpu"
+    )

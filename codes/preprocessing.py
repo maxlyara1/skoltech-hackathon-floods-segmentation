@@ -168,7 +168,9 @@ def _image_padding_(image, target_size=640):
     height, width = image.shape[1:3]
     pad_height = max(0, target_size - height)
     pad_width = max(0, target_size - width)
-    return np.pad(image, ((0, 0), (0, pad_height), (0, pad_width)), mode="reflect")
+    return np.pad(
+        image, ((0, 0), (0, pad_height), (0, pad_width)), mode="reflect"
+    ).copy()
 
 
 def _mask_padding_(mask, target_size=640):
@@ -185,7 +187,7 @@ def _mask_padding_(mask, target_size=640):
     height, width = mask.shape
     pad_height = max(0, target_size - height)
     pad_width = max(0, target_size - width)
-    return np.pad(mask, ((0, pad_height), (0, pad_width)), mode="reflect")
+    return np.pad(mask, ((0, pad_height), (0, pad_width)), mode="reflect").copy()
 
 
 def get_sorted_data_list(img_path: str) -> np.array:

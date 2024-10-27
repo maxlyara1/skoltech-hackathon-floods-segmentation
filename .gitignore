@@ -16,3 +16,4 @@ pipeline.drawio
 yolov8n-seg.pt
 yolo11l.pt
 codes/__pycache__/get_buildings_mask.cpython-312.pyc
+1.tif
