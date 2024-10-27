@@ -1,6 +1,7 @@
 import os
 import cv2
 import torch
+import numpy as np
 from ultralytics import YOLO
 from ultralytics.data.converter import convert_segment_masks_to_yolo_seg
 from preprocessing import preprocess_data
@@ -23,19 +24,41 @@ class Models:
         os.makedirs("train/saved_images", exist_ok=True)
         os.makedirs("train/saved_masks", exist_ok=True)
 
-        for i, (images, masks) in enumerate(self.train_ndwi_dataloader):
+        for i, (images, masks, *_) in enumerate(self.train_ndwi_dataloader):
             try:
-                # Копирование массива для предотвращения ошибки с отрицательными strides
-                image_np = images[0].numpy().copy().astype("uint8")
-                mask_np = masks[0].numpy().copy().astype("uint8")
+                # Приведение типов к uint8 для совместимости
+                image_np = images[0].to(torch.uint8).numpy()
+                mask_np = masks[0].to(torch.uint8).numpy()
+
+                # Ensure the images are in the correct format (e.g., 3 channels for images)
+                if image_np.ndim == 3 and image_np.shape[0] == 1:
+                    image_np = np.repeat(
+                        image_np, 3, axis=0
+                    )  # Convert single channel to 3 channels
+                elif image_np.ndim == 2:  # If the image is 2D, convert to 3 channels
+                    image_np = np.stack((image_np,) * 3, axis=-1)
+
+                if (
+                    image_np.shape[0] == 3
+                ):  # If channels are first, transpose to channels last
+                    image_np = np.transpose(image_np, (1, 2, 0))  # Change to HWC format
+
+                # Ensure masks are binarized
+                mask_np = (mask_np > 0).astype(np.uint8) * 255
 
                 # Сохранение изображений
                 image_path = f"train/saved_images/image_{i}.tif"
-                cv2.imwrite(image_path, image_np)
+                if cv2.imwrite(image_path, image_np):
+                    print(f"Saved image: {image_path}")
+                else:
+                    print(f"Failed to save image: {image_path}")
 
                 # Сохранение масок
                 mask_path = f"train/saved_masks/mask_{i}.tif"
-                cv2.imwrite(mask_path, mask_np)
+                if cv2.imwrite(mask_path, mask_np):
+                    print(f"Saved mask: {mask_path}")
+                else:
+                    print(f"Failed to save mask: {mask_path}")
             except Exception as e:
                 print(f"Ошибка при сохранении данных из dataloader: {e}")
 
@@ -45,7 +68,8 @@ class Models:
         for filename in os.listdir(path):
             if filename.endswith(".tif"):
                 img_path = os.path.join(path, filename)
-                if cv2.imread(img_path) is not None:
+                img = cv2.imread(img_path)
+                if img is not None:
                     valid_images.append(img_path)
                 else:
                     print(f"WARNING: Ignoring corrupt image file: {img_path}")
@@ -66,7 +90,6 @@ class Models:
                 "Папка с изображениями или масками пуста или содержит поврежденные файлы!"
             )
             return
-
         # Создание конфигурации yaml для использования в модели YOLO
         yaml_content = f"""
         train: {os.path.abspath('train/saved_images')}  # путь к обучающим изображениям
@@ -102,6 +125,4 @@ class Models:
 
 if __name__ == "__main__":
     models = Models()
-    models.segment_water(
-        epochs=3, device="cuda" if torch.cuda.is_available() else "cpu"
-    )
+    models.segment_water(epochs=3, device="cpu")

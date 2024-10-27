@@ -9,6 +9,7 @@ import random
 from torch.utils.data import ConcatDataset
 from formatting import preprocess_NDWI_format, preprocess_NDBI_format
 import json
+import torch
 from get_buildings_mask import apply_building_mask
 
 
@@ -360,6 +361,25 @@ class CombinedWaterDataset(Dataset):
         return self.combined_dataset[idx]
 
 
+def custom_collate_fn(batch):
+    images, masks, metas = [], [], []
+
+    for sample in batch:
+        image, mask, meta = sample
+
+        # Convert NumPy arrays to PyTorch tensors and ensure they are in uint8
+        images.append(
+            torch.tensor(image.copy(), dtype=torch.uint8)
+        )  # Make a copy of the image
+        masks.append(
+            torch.tensor(mask.copy(), dtype=torch.uint8)
+        )  # Make a copy of the mask
+        metas.append(meta)
+
+    # Stack tensors into batches
+    return torch.stack(images), torch.stack(masks), metas
+
+
 def get_data_loader(
     img_path: str,
     mask_path: str,
@@ -367,6 +387,7 @@ def get_data_loader(
     batch_size=32,
     shuffle=True,
     preprocess_fn=None,
+    custom_collate_fn=None,
 ) -> DataLoader:
     """
     Creates a DataLoader with either combined or regular dataset based on train parameter.
@@ -390,7 +411,9 @@ def get_data_loader(
         if train
         else WaterDataset(img_path, mask_path, data_list, preprocess_fn=preprocess_fn)
     )
-    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
+    return DataLoader(
+        dataset, batch_size=batch_size, shuffle=shuffle, collate_fn=custom_collate_fn
+    )
 
 
 def preprocess_data(
@@ -448,6 +471,7 @@ def preprocess_data(
         mask_path="data/masks/" if train else None,
         preprocess_fn=preprocess_NDWI_format,
         train=train,
+        custom_collate_fn=custom_collate_fn,
     )
 
     # NDBI DataLoader
