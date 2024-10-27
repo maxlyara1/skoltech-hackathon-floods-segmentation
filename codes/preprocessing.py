@@ -3,8 +3,10 @@ import numpy as np
 import rasterio
 from rasterio.windows import Window
 from torch.utils.data import Dataset, DataLoader
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from tqdm import tqdm
+import random
+from torch.utils.data import ConcatDataset
 
 
 class SplittingImage:
@@ -188,6 +190,35 @@ def get_sorted_data_list(img_path: str) -> np.array:
     return np.array(sorted(names))
 
 
+def get_augmentations(
+    image: np.ndarray, mask: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Applies random rotations and reflections to the input image and mask for augmentation.
+
+    Args:
+        image (np.ndarray): The input image.
+        mask (np.ndarray): The corresponding mask.
+
+    Returns:
+        Tuple[np.ndarray, np.ndarray]: The augmented image and mask.
+    """
+    # Random rotation (0, 90, 180, 270 degrees)
+    rotations = random.randint(0, 3)
+    image = np.rot90(image, rotations, axes=(1, 2))
+    mask = np.rot90(mask, rotations)
+
+    # Random reflection (horizontal and/or vertical)
+    if random.random() > 0.5:
+        image = np.flip(image, axis=1)
+        mask = np.flip(mask, axis=0)
+    if random.random() > 0.5:
+        image = np.flip(image, axis=2)
+        mask = np.flip(mask, axis=1)
+
+    return image, mask
+
+
 class WaterDataset(Dataset):
     """
     A dataset class for loading paired image and mask files for segmentation.
@@ -206,6 +237,12 @@ class WaterDataset(Dataset):
         self.img_path = img_path
         self.mask_path = mask_path
         self.file_names = file_names
+        self.metadata = []
+
+        # Извлечение метаданных
+        for file_name in self.file_names:
+            with rasterio.open(f"{self.img_path}{file_name}.tif") as fin:
+                self.metadata.append(fin.meta)
 
     def __len__(self):
         return len(self.file_names)
@@ -219,23 +256,99 @@ class WaterDataset(Dataset):
             mask = fin.read(1)
         mask = _mask_padding_(mask)
 
-        return image, mask
+        return image, mask, self.metadata[idx]
 
 
-def get_data_loader(img_path: str, mask_path: str) -> DataLoader:
+class WaterAugmentedDataset(Dataset):
     """
-    Initializes a DataLoader for paired image and mask files.
+    A dataset class for loading paired image and mask files for segmentation.
+    BUT WITH AUGMENTATION!
+
+    Attributes:
+        img_path (str): Directory path to input images.
+        mask_path (str): Directory path to masks.
+        file_names (List[str]): List of file names (without extensions).
+
+    Methods:
+        __len__(): Returns the number of samples.
+        __getitem__(idx): Returns a padded image and mask pair.
+    """
+
+    def __init__(self, img_path, mask_path, file_names):
+        self.img_path = img_path
+        self.mask_path = mask_path
+        self.file_names = file_names
+        self.metadata = []
+
+        # Извлечение метаданных
+        for file_name in self.file_names:
+            with rasterio.open(f"{self.img_path}{file_name}.tif") as fin:
+                self.metadata.append(fin.meta)
+
+    def __len__(self):
+        return len(self.file_names)
+
+    def __getitem__(self, idx):
+        with rasterio.open(f"{self.img_path}{self.file_names[idx]}.tif") as fin:
+            image = fin.read()
+        image = _image_padding_(image).astype(np.float32)
+
+        with rasterio.open(f"{self.mask_path}{self.file_names[idx]}.tif") as fin:
+            mask = fin.read(1)
+        mask = _mask_padding_(mask)
+
+        # Apply augmentations for each image and mask
+        image, mask = get_augmentations(image, mask)
+
+        return image, mask, self.metadata[idx]
+
+
+class CombinedWaterDataset(Dataset):
+    """
+    A dataset class that combines regular and augmented datasets for training.
+
+    This class concatenates WaterDataset and WaterAugmentedDataset when train=True,
+    effectively doubling the training data with augmented samples.
+    """
+
+    def __init__(self, img_path, mask_path, file_names):
+        # Create instances of both datasets
+        regular_dataset = WaterDataset(img_path, mask_path, file_names)
+        augmented_dataset = WaterAugmentedDataset(img_path, mask_path, file_names)
+
+        # Combine the datasets using ConcatDataset
+        self.combined_dataset = ConcatDataset([regular_dataset, augmented_dataset])
+
+    def __len__(self):
+        return len(self.combined_dataset)
+
+    def __getitem__(self, idx):
+        return self.combined_dataset[idx]
+
+
+def get_data_loader(
+    img_path: str, mask_path: str, train=True, batch_size=32, shuffle=True
+) -> DataLoader:
+    """
+    Creates a DataLoader with either combined or regular dataset based on train parameter.
 
     Args:
-        img_path (str): Directory with processed images.
-        mask_path (str): Directory with corresponding masks.
+        img_path (str): Path to image directory
+        mask_path (str): Path to mask directory
+        train (bool): If True, returns combined dataset loader, else returns regular dataset loader
+        batch_size (int): Batch size for DataLoader
+        shuffle (bool): Whether to shuffle the data
 
     Returns:
-        DataLoader: DataLoader for retrieving batches of paired image and mask files.
+        DataLoader: PyTorch DataLoader object
     """
     data_list = get_sorted_data_list(img_path)
-    dataset = WaterDataset(img_path=img_path, mask_path=mask_path, file_names=data_list)
-    return DataLoader(dataset)
+    dataset = (
+        CombinedWaterDataset(img_path, mask_path, data_list)
+        if train
+        else WaterDataset(img_path, mask_path, data_list)
+    )
+    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
 
 
 def preprocess_data(
@@ -244,10 +357,18 @@ def preprocess_data(
     train: bool = True,
     image_for_model_size: int = 640,
 ) -> DataLoader:
-    paths_big_images = get_sorted_data_list(big_images_path)
-    paths_masks_big_images = (
-        get_sorted_data_list(big_masks_path) if train and big_masks_path else None
-    )
+    """Function that preprocess data from 10240x5000 size to many 640x640.
+    Augmentation and overlapping works only in train to make dataset bigger.
+
+    Args:
+        big_images_path (str): Path to images of big size
+        big_masks_path (Optional[str], optional): Path to big-sized images. Defaults to None.
+        train (bool, optional): If true then augmentation and overlapping works. Defaults to True.
+        image_for_model_size (int, optional): Size of image for CV model. Defaults to 640.
+
+    Returns:
+        DataLoader: Dataloader with image, mask, metainformation(geo)
+    """
 
     overlap = 32 if train else 0
     class_to_split = SplittingImage()
@@ -273,17 +394,25 @@ def preprocess_data(
     data_loader = get_data_loader(
         img_path="data/images/",
         mask_path="data/masks/" if train else None,
+        train=train,
     )
     return data_loader
 
 
-def main():
-    preprocess_data(
-        big_images_path="train/images",
-        big_masks_path="train/masks",
-        train=True,
-        image_for_model_size=640,
-    )
+# def main():
+#     train_dataloader = preprocess_data(
+#         big_images_path="train/images",
+#         big_masks_path="train/masks",
+#         train=True,
+#         image_for_model_size=640,
+#     )
+#     test_dataloader = preprocess_data(
+#         big_images_path="train/images",
+#         big_masks_path=None,
+#         train=False,
+#         image_for_model_size=640,
+#     )
 
 
-main()
+# if __name__ == "__main__":
+#     main()
