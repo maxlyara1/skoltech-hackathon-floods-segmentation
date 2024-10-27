@@ -7,11 +7,25 @@ import matplotlib.pyplot as plt
 
 from shapely import affinity
 from shapely import Point
-
 from sklearn.metrics import f1_score
 
 
 def get_args():
+    """
+    Parse and return command-line arguments.
+
+    Args:
+        --osm_path (str): Path to the OpenStreetMap (OSM) file for identifying buildings.
+        --masks_path (str): Path to the directory containing binary ground truth masks.
+        --preds_path (str): Path to the directory containing prediction masks.
+        --pre_gt_path (str): Path to ground truth mask file for pre-flood conditions.
+        --post_gt_path (str): Path to ground truth mask file for post-flood conditions.
+        --pre_pred_path (str): Path to prediction mask file for pre-flood conditions.
+        --post_pred_path (str): Path to prediction mask file for post-flood conditions.
+
+    Returns:
+        argparse.Namespace: Parsed command-line arguments.
+    """
     parser = argparse.ArgumentParser()
     arg = parser.add_argument
     arg("--osm_path", type=str, help="Path to OSM file", required=True)
@@ -31,24 +45,38 @@ def flooded_houses(
     pred: np.ndarray,
     ground_truth: np.ndarray,
 ):
+    """
+    Calculate the number of flooded houses based on prediction and ground truth masks.
+
+    Args:
+        osm_path (str): Path to the OpenStreetMap (OSM) file containing building geometries.
+        lats (np.ndarray): Latitude coordinates of raster pixels.
+        lons (np.ndarray): Longitude coordinates of raster pixels.
+        pred (np.ndarray): Flattened 1D array of predicted flood mask.
+        ground_truth (np.ndarray): Flattened 1D array of ground truth flood mask.
+
+    Returns:
+        float: Macro F1 score comparing predicted and actual flooded buildings.
+    """
+    # Load and project OSM data to coordinate reference system (CRS) EPSG:4326
     gdf = gpd.read_file(osm_path)
     gdf = gdf.to_crs(4326)
-    gdf.tags.unique()
 
     flooded_pred = []
     flooded_gt = []
-    pred = pred.flatten()  # Flatten the prediction array
-    ground_truth = ground_truth.flatten()  # Flatten the ground_truth array
+    pred = pred.flatten()  # Flatten prediction array for indexing
+    ground_truth = ground_truth.flatten()  # Flatten ground truth array
 
+    # Iterate over each building in the OSM data
     for _, row in gdf.iterrows():
         polygon = row.geometry
-        # Scale the polygon for more accurate coverage
+        # Scale polygon to cover a larger area around each building
         scaled_polygon = affinity.scale(polygon, xfact=1.5, yfact=1.5)
 
-        # Get the polygon's bounding box (xmin, ymin, xmax, ymax)
+        # Extract bounding box of the scaled polygon
         xmin, ymin, xmax, ymax = scaled_polygon.bounds
 
-        # Find the indices of points that fall inside the bounding box of the polygon
+        # Get indices of points within polygon bounding box
         selected_indices = np.where(
             (ymin <= lats) & (lats <= ymax) & (xmin <= lons) & (lons <= xmax)
         )
@@ -58,14 +86,14 @@ def flooded_houses(
         flood_pred_to_check = pred[selected_indices]
         flood_gt_to_check = ground_truth[selected_indices]
 
-        # Check if at least one point inside the polygon is flooded in the prediction mask
+        # Check if at least one point in the polygon is flooded in the prediction mask
         is_flooded_pred = any(
             flood_pred_to_check[i]
             and scaled_polygon.contains(Point(lons_to_check[i], lats_to_check[i]))
             for i in range(len(flood_pred_to_check))
         )
 
-        # Check if at least one point inside the polygon is flooded in the ground truth mask
+        # Check if at least one point in the polygon is flooded in the ground truth mask
         is_flooded_gt = any(
             flood_gt_to_check[i]
             and scaled_polygon.contains(Point(lons_to_check[i], lats_to_check[i]))
@@ -79,55 +107,74 @@ def flooded_houses(
 
 
 def load_raster(file_path):
-    """Load a raster image and flatten it into a 1D array."""
+    """
+    Load a single-band raster image and flatten it into a 1D array.
+
+    Args:
+        file_path (str): Path to the raster file.
+
+    Returns:
+        np.ndarray: Flattened raster data.
+    """
     with rasterio.open(file_path) as src:
         data = src.read(1)  # Read the first band
     return data.flatten()
 
 
 def calculate_f1_score(dir1, dir2):
-    """Calculate the F1 score between corresponding images in two directories."""
+    """
+    Calculate the average macro F1 score between corresponding images in two directories.
+
+    Args:
+        dir1 (str): Directory containing the first set of images (e.g., ground truth masks).
+        dir2 (str): Directory containing the second set of images (e.g., prediction masks).
+
+    Returns:
+        float: Average macro F1 score across all image pairs.
+    """
     f1_scores = []
 
-    # List all files in the directories
+    # List and sort all files in both directories
     files1 = sorted(os.listdir(dir1))
     files2 = sorted(os.listdir(dir2))
 
     for file1, file2 in zip(files1, files2):
-
         file_path1 = os.path.join(dir1, file1)
         file_path2 = os.path.join(dir2, file2)
 
-        # Load the images
+        # Load raster images
         img1 = load_raster(file_path1)
         img2 = load_raster(file_path2)
 
-        # Calculate F1 score
+        # Calculate F1 score for each pair of images
         f1 = f1_score(img1, img2, average="macro")
         f1_scores.append(f1)
 
-    # Calculate average F1 score across all image pairs
+    # Calculate and return the average F1 score
     average_f1 = np.mean(f1_scores)
     return average_f1
 
 
 def main():
-
+    """
+    Main function to calculate average F1 score by comparing prediction masks
+    with ground truth masks, and evaluating flooded houses based on OSM building geometries.
+    """
     args = get_args()
 
     masks_path = args.masks_path
     preds_path = args.preds_path
 
+    # Calculate the F1 score for water detection in prediction and mask folders
     f1_water = calculate_f1_score(masks_path, preds_path)
 
     osm_path = args.osm_path
-
     pre_gt_path = args.pre_gt_path
     post_gt_path = args.post_gt_path
-
     pre_pred_path = args.pre_pred_path
     post_pred_path = args.post_pred_path
 
+    # Load geographic data for pre-flood and post-flood ground truth and predictions
     with rasterio.open(pre_gt_path) as multi_band_src:
         pre_mask = multi_band_src.read(1)
         pre_height, pre_width = pre_mask.shape
@@ -154,10 +201,12 @@ def main():
     with rasterio.open(post_pred_path) as multi_band_src:
         post_pred = multi_band_src.read(1)
 
+    # Calculate F1 scores for flooded houses in pre-flood and post-flood conditions
     pre_f1 = flooded_houses(osm_path, pre_lats, pre_lons, pre_pred, pre_mask)
     post_f1 = flooded_houses(osm_path, post_lats, post_lons, post_pred, post_mask)
     avg_f1_business = (pre_f1 + post_f1) / 2
 
+    # Final average F1 score combining water detection and building-level metrics
     print(f"F1-Score: {(f1_water + avg_f1_business) / 2 :.3f}")
 
 
