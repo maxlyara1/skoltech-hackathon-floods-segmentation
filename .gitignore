@@ -8,3 +8,11 @@ pipeline.drawio
 /masks
 /test
 /test_scoltech
+/codes
+/codes
+/codes/__pycache__
+/runs
+/codes
+yolov8n-seg.pt
+yolo11l.pt
+codes/__pycache__/get_buildings_mask.cpython-312.pyc
