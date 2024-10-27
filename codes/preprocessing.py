@@ -7,6 +7,7 @@ from typing import List, Optional, Tuple
 from tqdm import tqdm
 import random
 from torch.utils.data import ConcatDataset
+from formatting import preprocess_NDWI_format, preprocess_NDBI_format
 
 
 class SplittingImage:
@@ -233,11 +234,12 @@ class WaterDataset(Dataset):
         __getitem__(idx): Returns a padded image and mask pair.
     """
 
-    def __init__(self, img_path, mask_path, file_names):
+    def __init__(self, img_path, mask_path, file_names, preprocess_fn=None):
         self.img_path = img_path
         self.mask_path = mask_path
         self.file_names = file_names
         self.metadata = []
+        self.preprocess_fn = preprocess_fn
 
         # Извлечение метаданных
         for file_name in self.file_names:
@@ -256,7 +258,12 @@ class WaterDataset(Dataset):
             mask = fin.read(1)
         mask = _mask_padding_(mask)
 
-        return image, mask, self.metadata[idx]
+        if self.preprocess_fn:
+            processed_image = self.preprocess_fn(image)
+        else:
+            processed_image = image
+
+        return processed_image, mask, self.metadata[idx]
 
 
 class WaterAugmentedDataset(Dataset):
@@ -274,11 +281,12 @@ class WaterAugmentedDataset(Dataset):
         __getitem__(idx): Returns a padded image and mask pair.
     """
 
-    def __init__(self, img_path, mask_path, file_names):
+    def __init__(self, img_path, mask_path, file_names, preprocess_fn=None):
         self.img_path = img_path
         self.mask_path = mask_path
         self.file_names = file_names
         self.metadata = []
+        self.preprocess_fn = preprocess_fn
 
         # Извлечение метаданных
         for file_name in self.file_names:
@@ -300,7 +308,12 @@ class WaterAugmentedDataset(Dataset):
         # Apply augmentations for each image and mask
         image, mask = get_augmentations(image, mask)
 
-        return image, mask, self.metadata[idx]
+        if self.preprocess_fn:
+            processed_image = self.preprocess_fn(image)
+        else:
+            processed_image = image
+
+        return processed_image, mask, self.metadata[idx]
 
 
 class CombinedWaterDataset(Dataset):
@@ -311,10 +324,14 @@ class CombinedWaterDataset(Dataset):
     effectively doubling the training data with augmented samples.
     """
 
-    def __init__(self, img_path, mask_path, file_names):
+    def __init__(self, img_path, mask_path, file_names, preprocess_fn):
         # Create instances of both datasets
-        regular_dataset = WaterDataset(img_path, mask_path, file_names)
-        augmented_dataset = WaterAugmentedDataset(img_path, mask_path, file_names)
+        regular_dataset = WaterDataset(
+            img_path, mask_path, file_names, preprocess_fn=preprocess_fn
+        )
+        augmented_dataset = WaterAugmentedDataset(
+            img_path, mask_path, file_names, preprocess_fn=preprocess_fn
+        )
 
         # Combine the datasets using ConcatDataset
         self.combined_dataset = ConcatDataset([regular_dataset, augmented_dataset])
@@ -327,7 +344,12 @@ class CombinedWaterDataset(Dataset):
 
 
 def get_data_loader(
-    img_path: str, mask_path: str, train=True, batch_size=32, shuffle=True
+    img_path: str,
+    mask_path: str,
+    train=True,
+    batch_size=32,
+    shuffle=True,
+    preprocess_fn=None,
 ) -> DataLoader:
     """
     Creates a DataLoader with either combined or regular dataset based on train parameter.
@@ -338,15 +360,18 @@ def get_data_loader(
         train (bool): If True, returns combined dataset loader, else returns regular dataset loader
         batch_size (int): Batch size for DataLoader
         shuffle (bool): Whether to shuffle the data
+        preprocess_fn (function): function that will preprocess image(NDBI or NDWI)
 
     Returns:
         DataLoader: PyTorch DataLoader object
     """
     data_list = get_sorted_data_list(img_path)
     dataset = (
-        CombinedWaterDataset(img_path, mask_path, data_list)
+        CombinedWaterDataset(
+            img_path, mask_path, data_list, preprocess_fn=preprocess_fn
+        )
         if train
-        else WaterDataset(img_path, mask_path, data_list)
+        else WaterDataset(img_path, mask_path, data_list, preprocess_fn=preprocess_fn)
     )
     return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
 
@@ -391,28 +416,38 @@ def preprocess_data(
                 image_id=path_to_file.split(".")[0],
             )
 
-    data_loader = get_data_loader(
+    # NDWI DataLoader
+    ndwi_loader = get_data_loader(
         img_path="data/images/",
         mask_path="data/masks/" if train else None,
+        preprocess_fn=preprocess_NDWI_format,
         train=train,
     )
-    return data_loader
+
+    # NDBI DataLoader
+    ndbi_loader = get_data_loader(
+        img_path="data/images/",
+        mask_path="data/masks/" if train else None,
+        preprocess_fn=preprocess_NDBI_format,
+        train=train,
+    )
+    return ndwi_loader, ndbi_loader
 
 
-# def main():
-#     train_dataloader = preprocess_data(
-#         big_images_path="train/images",
-#         big_masks_path="train/masks",
-#         train=True,
-#         image_for_model_size=640,
-#     )
-#     test_dataloader = preprocess_data(
-#         big_images_path="train/images",
-#         big_masks_path=None,
-#         train=False,
-#         image_for_model_size=640,
-#     )
+def main():
+    # train_ndwi_dataloader, train_ndbi_dataloader = preprocess_data(
+    #     big_images_path="train/images",
+    #     big_masks_path="train/masks",
+    #     train=True,
+    #     image_for_model_size=640,
+    # )
+    test_ndwi_dataloader, test_ndbi_dataloader = preprocess_data(
+        big_images_path="train/images",
+        big_masks_path=None,
+        train=False,
+        image_for_model_size=640,
+    )
 
 
-# if __name__ == "__main__":
-#     main()
+if __name__ == "__main__":
+    main()
